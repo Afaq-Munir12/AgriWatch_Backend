@@ -1,0 +1,13 @@
+[
+  {
+    "id": "AL-1001",
+    "district": "Mansehra District",
+    "province": "North-West Frontier",
+    "severity": "Severe",
+    "message": "Current drought monitoring for Mansehra District shows low drought risk. ML drought probability is 12.9%. Continue monitoring local environmental conditions.",
+    "sentTo": "Farmers",
+    "date": "2026-09-28",
+    "timestamp": "2026-09-28T16:41:41.821978",
+    "status": "Delivered"
+  }
+]
