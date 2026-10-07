@@ -19,6 +19,8 @@
 
 
 import os
+import re
+import time
 
 
 
@@ -475,14 +477,60 @@ MODEL_FEATURES = loaded_config["features"]
 
 
 WARNING_THRESHOLD = float(
-
-
-
     loaded_config["warning_threshold"]
-
-
-
 )
+
+# The production model/config must agree on the exact ordered feature set.
+if len(MODEL_FEATURES) != 24:
+    raise ValueError(
+        f"Expected the upgraded 24-feature model config, found {len(MODEL_FEATURES)} features."
+    )
+
+required_model_features = {
+    "rainfall_mm",
+    "soil_moisture",
+    "ndvi",
+    "temperature_c",
+    "evaporation_mm",
+    "rainfall_3month",
+    "spi3",
+    "rainfall_mm_lag1",
+    "rainfall_mm_lag2",
+    "rainfall_mm_lag3",
+    "soil_moisture_lag1",
+    "soil_moisture_lag2",
+    "soil_moisture_lag3",
+    "ndvi_lag1",
+    "ndvi_lag2",
+    "ndvi_lag3",
+    "temperature_c_lag1",
+    "temperature_c_lag2",
+    "temperature_c_lag3",
+    "evaporation_mm_lag1",
+    "evaporation_mm_lag2",
+    "evaporation_mm_lag3",
+    "month_sin",
+    "month_cos",
+}
+
+missing_model_features = required_model_features - set(MODEL_FEATURES)
+if missing_model_features:
+    raise ValueError(
+        "Model config is missing upgraded features: "
+        + ", ".join(sorted(missing_model_features))
+    )
+
+model_feature_count = getattr(model, "n_features_in_", None)
+if model_feature_count is not None and int(model_feature_count) != len(MODEL_FEATURES):
+    raise ValueError(
+        f"Saved model expects {model_feature_count} features but config contains {len(MODEL_FEATURES)}."
+    )
+
+model_feature_names = getattr(model, "feature_names_in_", None)
+if model_feature_names is not None and list(model_feature_names) != list(MODEL_FEATURES):
+    raise ValueError(
+        "Saved model feature order does not match agriwatch_model_config.json."
+    )
 
 
 
@@ -535,41 +583,16 @@ master_df = pd.read_csv(DATA_PATH)
 
 
 required_columns = [
-
-
-
     "date",
-
-
-
     "province",
-
-
-
     "district",
-
-
-
     "rainfall_mm",
-
-
-
+    "rainfall_3month",
+    "spi3",
     "soil_moisture",
-
-
-
     "ndvi",
-
-
-
     "temperature_c",
-
-
-
     "evaporation_mm",
-
-
-
 ]
 
 
@@ -687,22 +710,26 @@ master_df["district"] = (
 
 
 master_df["province"] = (
-
-
-
     master_df["province"]
-
-
-
     .astype(str)
-
-
-
     .str.strip()
-
-
-
 )
+
+numeric_columns = [
+    "rainfall_mm",
+    "rainfall_3month",
+    "spi3",
+    "soil_moisture",
+    "ndvi",
+    "temperature_c",
+    "evaporation_mm",
+]
+
+for column in numeric_columns:
+    master_df[column] = pd.to_numeric(
+        master_df[column],
+        errors="coerce"
+    )
 
 
 
@@ -1231,317 +1258,86 @@ def run_prediction(features: dict):
 
 
 def find_district(district_name: str):
+    """Find a district while remaining compatible with old frontend labels.
 
+    The upgraded 160-district master uses cleaner/current names such as
+    "Jacobabad", while older frontend routes/data may still send
+    "Jacobabad District" or agency-style labels.  Matching therefore uses
+    both the exact name and a normalized name with administrative suffixes
+    and punctuation removed.
+    """
 
+    requested_raw = str(district_name or "").strip()
+    if not requested_raw:
+        raise ValueError("District name is required.")
 
+    def normalize_name(value):
+        value = str(value or "").strip().lower()
+        # Keep old frontend/old-boundary names compatible with the new master.
+        value = re.sub(r"\b(district|agency)\b", "", value)
+        value = re.sub(r"[^a-z0-9]+", "", value)
+        return value
 
+    requested_lower = requested_raw.lower()
 
-
-
-    requested = (
-
-
-
-        district_name
-
-
-
-        .strip()
-
-
-
-        .lower()
-
-
-
-    )
-
-
-
-
-
-
-
-    # --------------------------------------------------------
-
-
-
-    # Exact match first
-
-
-
-    # --------------------------------------------------------
-
-
-
-
-
-
-
+    # Exact match first.
     exact = master_df[
-
-
-
-        master_df["district"]
-
-
-
-        .str.lower()
-
-
-
-        == requested
-
-
-
+        master_df["district"].str.lower() == requested_lower
     ]
-
-
-
-
-
-
-
     if not exact.empty:
-
-
-
         return exact.copy()
 
-
-
-
-
-
-
-    # --------------------------------------------------------
-
-
-
-    # Try adding "District"
-
-
-
-    # Example:
-
-
-
-    # Jacobabad -> Jacobabad District
-
-
-
-    # --------------------------------------------------------
-
-
-
-
-
-
-
-    if not requested.endswith(" district"):
-
-
-
-
-
-
-
-        requested_with_district = (
-
-
-
-            requested + " district"
-
-
-
-        )
-
-
-
-
-
-
-
-        exact_with_district = master_df[
-
-
-
-            master_df["district"]
-
-
-
-            .str.lower()
-
-
-
-            == requested_with_district
-
-
-
-        ]
-
-
-
-
-
-
-
-        if not exact_with_district.empty:
-
-
-
-            return exact_with_district.copy()
-
-
-
-
-
-
-
-    # --------------------------------------------------------
-
-
-
-    # Partial match
-
-
-
-    # --------------------------------------------------------
-
-
-
-
-
-
-
-    partial = master_df[
-
-
-
-        master_df["district"]
-
-
-
-        .str.lower()
-
-
-
-        .str.contains(
-
-
-
-            requested,
-
-
-
-            regex=False,
-
-
-
-            na=False
-
-
-
-        )
-
-
-
-    ]
-
-
-
-
-
-
-
-    unique_matches = (
-
-
-
-        partial["district"]
-
-
-
-        .drop_duplicates()
-
-
-
-        .tolist()
-
-
-
-    )
-
-
-
-
-
-
-
-    if len(unique_matches) == 1:
-
-
-
-
-
-
-
+    requested_key = normalize_name(requested_raw)
+
+    # Common spelling/name aliases that normalization alone may not solve.
+    alias_keys = {
+        "deraismailkhan": "dikhan",
+        "dikh": "dikhan",
+        "kambershahdadkot": "qambarshahdadkot",
+        "qambershahdadkot": "qambarshahdadkot",
+        "shaheedbenazirabad": "shaheedbenazirabad",
+        "nawabshah": "shaheedbenazirabad",
+        "torghar": "torghar",
+        "torgharh": "torghar",
+    }
+    requested_key = alias_keys.get(requested_key, requested_key)
+
+    district_names = master_df["district"].drop_duplicates().tolist()
+    normalized_matches = []
+
+    for name in district_names:
+        key = normalize_name(name)
+        key = alias_keys.get(key, key)
+        if key == requested_key:
+            normalized_matches.append(name)
+
+    if len(normalized_matches) == 1:
         return master_df[
-
-
-
-            master_df["district"]
-
-
-
-            == unique_matches[0]
-
-
-
+            master_df["district"] == normalized_matches[0]
         ].copy()
 
+    # Conservative partial normalized match as a final fallback.
+    partial_matches = []
+    for name in district_names:
+        key = alias_keys.get(normalize_name(name), normalize_name(name))
+        if requested_key and (requested_key in key or key in requested_key):
+            partial_matches.append(name)
 
+    partial_matches = sorted(set(partial_matches))
 
+    if len(partial_matches) == 1:
+        return master_df[
+            master_df["district"] == partial_matches[0]
+        ].copy()
 
-
-
-
-    if len(unique_matches) > 1:
-
-
-
-
-
-
-
+    if len(partial_matches) > 1:
         raise ValueError(
-
-
-
             "Multiple districts matched. Matches: "
-
-
-
-            + ", ".join(unique_matches)
-
-
-
+            + ", ".join(partial_matches)
         )
-
-
-
-
-
-
 
     raise ValueError(
-
-
-
         f"District '{district_name}' was not found."
-
-
-
     )
 
 
@@ -1558,7 +1354,7 @@ def find_district(district_name: str):
 
 
 
-# 13. BUILD 22 FEATURES AUTOMATICALLY
+# 13. BUILD 24 FEATURES AUTOMATICALLY
 
 
 
@@ -1570,549 +1366,94 @@ def find_district(district_name: str):
 
 
 
-def build_district_features(
-
-
-
-    district_name: str
-
-
-
-):
-
-
-
-
-
-
-
-    district_df = find_district(
-
-
-
-        district_name
-
-
-
-    )
-
-
-
-
-
-
+def build_district_features(district_name: str):
+    """Build the exact ordered inputs required by the upgraded 24-feature RF."""
 
     district_df = (
-
-
-
-        district_df
-
-
-
+        find_district(district_name)
         .sort_values("date")
-
-
-
         .reset_index(drop=True)
-
-
-
     )
 
-
-
-
-
-
-
-    # Current month + previous 3 months required
-
-
-
+    # Current month + previous 3 months are required by the lag features.
     if len(district_df) < 4:
-
-
-
-
-
-
-
         raise ValueError(
-
-
-
-            f"Not enough historical data for "
-
-
-
-            f"'{district_name}'."
-
-
-
+            f"Not enough historical data for '{district_name}'."
         )
-
-
-
-
-
-
 
     current = district_df.iloc[-1]
-
-
-
     lag1 = district_df.iloc[-2]
-
-
-
     lag2 = district_df.iloc[-3]
-
-
-
     lag3 = district_df.iloc[-4]
 
-
-
-
-
-
-
-    month = int(
-
-
-
-        current["date"].month
-
-
-
-    )
-
-
-
-
-
-
-
-    month_sin = np.sin(
-
-
-
-        2 * np.pi * month / 12
-
-
-
-    )
-
-
-
-
-
-
-
-    month_cos = np.cos(
-
-
-
-        2 * np.pi * month / 12
-
-
-
-    )
-
-
-
-
-
-
+    month = int(current["date"].month)
+    month_sin = np.sin(2 * np.pi * month / 12)
+    month_cos = np.cos(2 * np.pi * month / 12)
 
     features = {
-
-
-
-
-
-
-
         # Current environmental conditions
+        "rainfall_mm": float(current["rainfall_mm"]),
+        "soil_moisture": float(current["soil_moisture"]),
+        "ndvi": float(current["ndvi"]),
+        "temperature_c": float(current["temperature_c"]),
+        "evaporation_mm": float(current["evaporation_mm"]),
 
-
-
-        "rainfall_mm":
-
-
-
-            float(current["rainfall_mm"]),
-
-
-
-
-
-
-
-        "soil_moisture":
-
-
-
-            float(current["soil_moisture"]),
-
-
-
-
-
-
-
-        "ndvi":
-
-
-
-            float(current["ndvi"]),
-
-
-
-
-
-
-
-        "temperature_c":
-
-
-
-            float(current["temperature_c"]),
-
-
-
-
-
-
-
-        "evaporation_mm":
-
-
-
-            float(current["evaporation_mm"]),
-
-
-
-
-
-
-
-
-
-
+        # Added for the upgraded next-month model
+        "rainfall_3month": float(current["rainfall_3month"]),
+        "spi3": float(current["spi3"]),
 
         # Rainfall lags
-
-
-
-        "rainfall_mm_lag1":
-
-
-
-            float(lag1["rainfall_mm"]),
-
-
-
-
-
-
-
-        "rainfall_mm_lag2":
-
-
-
-            float(lag2["rainfall_mm"]),
-
-
-
-
-
-
-
-        "rainfall_mm_lag3":
-
-
-
-            float(lag3["rainfall_mm"]),
-
-
-
-
-
-
-
-
-
-
+        "rainfall_mm_lag1": float(lag1["rainfall_mm"]),
+        "rainfall_mm_lag2": float(lag2["rainfall_mm"]),
+        "rainfall_mm_lag3": float(lag3["rainfall_mm"]),
 
         # Soil moisture lags
-
-
-
-        "soil_moisture_lag1":
-
-
-
-            float(lag1["soil_moisture"]),
-
-
-
-
-
-
-
-        "soil_moisture_lag2":
-
-
-
-            float(lag2["soil_moisture"]),
-
-
-
-
-
-
-
-        "soil_moisture_lag3":
-
-
-
-            float(lag3["soil_moisture"]),
-
-
-
-
-
-
-
-
-
-
+        "soil_moisture_lag1": float(lag1["soil_moisture"]),
+        "soil_moisture_lag2": float(lag2["soil_moisture"]),
+        "soil_moisture_lag3": float(lag3["soil_moisture"]),
 
         # NDVI lags
-
-
-
-        "ndvi_lag1":
-
-
-
-            float(lag1["ndvi"]),
-
-
-
-
-
-
-
-        "ndvi_lag2":
-
-
-
-            float(lag2["ndvi"]),
-
-
-
-
-
-
-
-        "ndvi_lag3":
-
-
-
-            float(lag3["ndvi"]),
-
-
-
-
-
-
-
-
-
-
+        "ndvi_lag1": float(lag1["ndvi"]),
+        "ndvi_lag2": float(lag2["ndvi"]),
+        "ndvi_lag3": float(lag3["ndvi"]),
 
         # Temperature lags
-
-
-
-        "temperature_c_lag1":
-
-
-
-            float(lag1["temperature_c"]),
-
-
-
-
-
-
-
-        "temperature_c_lag2":
-
-
-
-            float(lag2["temperature_c"]),
-
-
-
-
-
-
-
-        "temperature_c_lag3":
-
-
-
-            float(lag3["temperature_c"]),
-
-
-
-
-
-
-
-
-
-
+        "temperature_c_lag1": float(lag1["temperature_c"]),
+        "temperature_c_lag2": float(lag2["temperature_c"]),
+        "temperature_c_lag3": float(lag3["temperature_c"]),
 
         # Evaporation lags
-
-
-
-        "evaporation_mm_lag1":
-
-
-
-            float(lag1["evaporation_mm"]),
-
-
-
-
-
-
-
-        "evaporation_mm_lag2":
-
-
-
-            float(lag2["evaporation_mm"]),
-
-
-
-
-
-
-
-        "evaporation_mm_lag3":
-
-
-
-            float(lag3["evaporation_mm"]),
-
-
-
-
-
-
-
-
-
-
+        "evaporation_mm_lag1": float(lag1["evaporation_mm"]),
+        "evaporation_mm_lag2": float(lag2["evaporation_mm"]),
+        "evaporation_mm_lag3": float(lag3["evaporation_mm"]),
 
         # Seasonal encoding
-
-
-
-        "month_sin":
-
-
-
-            float(month_sin),
-
-
-
-
-
-
-
-        "month_cos":
-
-
-
-            float(month_cos),
-
-
-
+        "month_sin": float(month_sin),
+        "month_cos": float(month_cos),
     }
 
-
-
-
-
-
-
-    # Make sure no NaN values reach model
-
-
-
-    invalid_features = [
-
-
-
-        key
-
-
-
-        for key, value in features.items()
-
-
-
-        if pd.isna(value)
-
-
-
+    # Only the features listed by the saved config are sent to the model.
+    # This keeps the model order identical to training.
+    missing_features = [
+        feature for feature in MODEL_FEATURES
+        if feature not in features
     ]
-
-
-
-
-
-
-
-    if invalid_features:
-
-
-
-
-
-
-
+    if missing_features:
         raise ValueError(
-
-
-
-            "Missing environmental values for "
-
-
-
-            f"{district_name}: "
-
-
-
-            + ", ".join(invalid_features)
-
-
-
+            "Unable to build configured model features: "
+            + ", ".join(missing_features)
         )
 
-
-
-
-
-
+    invalid_features = [
+        feature for feature in MODEL_FEATURES
+        if pd.isna(features[feature]) or not np.isfinite(float(features[feature]))
+    ]
+    if invalid_features:
+        raise ValueError(
+            "Missing environmental values for "
+            f"{district_name}: "
+            + ", ".join(invalid_features)
+        )
 
     return features, current
 
@@ -2124,6 +1465,310 @@ def build_district_features(
 
 
 
+
+
+
+# ============================================================
+# FAST LATEST-PREDICTION CACHE
+# ============================================================
+#
+# Why this exists:
+# The old /map-data and /compare-districts endpoints called
+# predict_district() 160 separate times. With a 500-tree
+# Random Forest that creates a lot of repeated Python/sklearn
+# overhead on every page load.
+#
+# This helper builds all 160 feature rows once, performs ONE
+# batch predict_proba() call, and keeps the result in memory.
+# The cache is refreshed automatically every 5 minutes.
+# ============================================================
+
+LATEST_PREDICTION_CACHE_SECONDS = 300
+
+_latest_prediction_cache = {
+    "created_at": 0.0,
+    "districts": None,
+    "by_name": None,
+}
+
+
+def _json_safe_float(value, decimals):
+    if pd.isna(value):
+        return None
+
+    number = float(value)
+
+    if not np.isfinite(number):
+        return None
+
+    return round(number, decimals)
+
+
+def _build_all_latest_predictions():
+    """Build current next-month predictions for all districts in one batch."""
+
+    data = (
+        master_df
+        .sort_values(["district", "date"])
+        .copy()
+    )
+
+    # Create the same lag features used during training.
+    grouped = data.groupby("district", sort=False)
+
+    lag_sources = [
+        "rainfall_mm",
+        "soil_moisture",
+        "ndvi",
+        "temperature_c",
+        "evaporation_mm",
+    ]
+
+    for feature in lag_sources:
+        for lag in (1, 2, 3):
+            data[f"{feature}_lag{lag}"] = (
+                grouped[feature].shift(lag)
+            )
+
+    month_number = data["date"].dt.month
+
+    data["month_sin"] = np.sin(
+        2 * np.pi * month_number / 12
+    )
+
+    data["month_cos"] = np.cos(
+        2 * np.pi * month_number / 12
+    )
+
+    # Keep only the latest month for each district.
+    latest_index = (
+        data.groupby("district")["date"].idxmax()
+    )
+
+    latest = (
+        data.loc[latest_index]
+        .sort_values(["province", "district"])
+        .reset_index(drop=True)
+    )
+
+    missing_model_columns = [
+        feature
+        for feature in MODEL_FEATURES
+        if feature not in latest.columns
+    ]
+
+    if missing_model_columns:
+        raise ValueError(
+            "Unable to build batch model features: "
+            + ", ".join(missing_model_columns)
+        )
+
+    feature_frame = latest[MODEL_FEATURES].apply(
+        pd.to_numeric,
+        errors="coerce"
+    )
+
+    valid_mask = (
+        feature_frame.notna().all(axis=1)
+        &
+        np.isfinite(
+            feature_frame.to_numpy(dtype=float)
+        ).all(axis=1)
+    )
+
+    valid_latest = (
+        latest.loc[valid_mask]
+        .reset_index(drop=True)
+    )
+
+    X = (
+        feature_frame.loc[valid_mask]
+        .reset_index(drop=True)
+        .astype(float)
+    )
+
+    if X.empty:
+        raise ValueError(
+            "No valid latest district feature rows were available."
+        )
+
+    # IMPORTANT PERFORMANCE FIX:
+    # one predict_proba call for all districts, not 160 calls.
+    probabilities = (
+        model.predict_proba(X)[:, 1]
+    )
+
+    results = []
+
+    for row_number, current in valid_latest.iterrows():
+        probability = float(
+            probabilities[row_number]
+        )
+
+        predicted_drought = int(
+            probability >= WARNING_THRESHOLD
+        )
+
+        data_date = pd.Timestamp(
+            current["date"]
+        )
+
+        prediction_for_date = (
+            data_date
+            +
+            pd.offsets.MonthBegin(1)
+        )
+
+        spi_status = current.get(
+            "spi_status",
+            None
+        )
+
+        if pd.isna(spi_status):
+            spi_status = None
+        elif spi_status is not None:
+            spi_status = str(spi_status)
+
+        results.append({
+            "success": True,
+            "drought_probability":
+                round(probability, 4),
+            "drought_probability_percent":
+                round(probability * 100, 2),
+            "predicted_drought":
+                predicted_drought,
+            "prediction_status":
+                (
+                    "Drought Warning"
+                    if predicted_drought == 1
+                    else "No Drought"
+                ),
+            "risk_level":
+                calculate_risk_level(probability),
+            "warning_threshold":
+                WARNING_THRESHOLD,
+            "district":
+                str(current["district"]),
+            "province":
+                str(current["province"]),
+            "data_date":
+                data_date.strftime("%Y-%m-%d"),
+            "prediction_for_date":
+                prediction_for_date.strftime("%Y-%m-%d"),
+            "prediction_horizon":
+                "next_month",
+            "environmental_data": {
+                "rainfall_mm":
+                    _json_safe_float(
+                        current["rainfall_mm"],
+                        3
+                    ),
+                "rainfall_3month":
+                    _json_safe_float(
+                        current["rainfall_3month"],
+                        3
+                    ),
+                "spi3":
+                    _json_safe_float(
+                        current["spi3"],
+                        4
+                    ),
+                "spi_status":
+                    spi_status,
+                "soil_moisture":
+                    _json_safe_float(
+                        current["soil_moisture"],
+                        4
+                    ),
+                "ndvi":
+                    _json_safe_float(
+                        current["ndvi"],
+                        4
+                    ),
+                "temperature_c":
+                    _json_safe_float(
+                        current["temperature_c"],
+                        2
+                    ),
+                "evaporation_mm":
+                    _json_safe_float(
+                        current["evaporation_mm"],
+                        3
+                    ),
+            },
+        })
+
+    results.sort(
+        key=lambda item:
+            item["drought_probability"],
+        reverse=True
+    )
+
+    by_name = {
+        item["district"].strip().lower(): item
+        for item in results
+    }
+
+    return results, by_name
+
+
+def get_cached_latest_predictions(force=False):
+    """Return cached all-district predictions, refreshing when stale."""
+
+    now = time.monotonic()
+
+    cache_valid = (
+        not force
+        and
+        _latest_prediction_cache["districts"] is not None
+        and
+        (
+            now
+            -
+            _latest_prediction_cache["created_at"]
+        )
+        <
+        LATEST_PREDICTION_CACHE_SECONDS
+    )
+
+    if cache_valid:
+        return (
+            _latest_prediction_cache["districts"],
+            _latest_prediction_cache["by_name"],
+        )
+
+    districts, by_name = (
+        _build_all_latest_predictions()
+    )
+
+    _latest_prediction_cache[
+        "created_at"
+    ] = now
+
+    _latest_prediction_cache[
+        "districts"
+    ] = districts
+
+    _latest_prediction_cache[
+        "by_name"
+    ] = by_name
+
+    return districts, by_name
+
+
+def _copy_prediction(prediction):
+    """Return a safe shallow/deep-enough copy for endpoint responses."""
+
+    result = dict(prediction)
+
+    result["environmental_data"] = dict(
+        prediction.get(
+            "environmental_data",
+            {}
+        )
+    )
+
+    return result
 
 
 # ============================================================
@@ -2321,81 +1966,22 @@ def health():
 
 
 def model_info():
-
-
-
-
-
-
-
     return {
-
-
-
-        "model":
-
-
-
-            "AgriWatch Drought Prediction Random Forest",
-
-
-
-
-
-
-
-        "number_of_features":
-
-
-
-            len(MODEL_FEATURES),
-
-
-
-
-
-
-
-        "features":
-
-
-
-            MODEL_FEATURES,
-
-
-
-
-
-
-
-        "warning_threshold":
-
-
-
-            WARNING_THRESHOLD,
-
-
-
-
-
-
-
-        "available_districts":
-
-
-
-            int(
-
-
-
-                master_df["district"].nunique()
-
-
-
-            )
-
-
-
+        "model": "AgriWatch Drought Prediction Random Forest",
+        "number_of_features": len(MODEL_FEATURES),
+        "features": MODEL_FEATURES,
+        "warning_threshold": WARNING_THRESHOLD,
+        "prediction_horizon": loaded_config.get(
+            "prediction_horizon",
+            "next_month"
+        ),
+        "target_definition": loaded_config.get(
+            "target_definition",
+            "next_month_spi3 <= -1"
+        ),
+        "available_districts": int(master_df["district"].nunique()),
+        "records": int(len(master_df)),
+        "latest_data_date": master_df["date"].max().strftime("%Y-%m-%d"),
     }
 
 
@@ -2680,408 +2266,132 @@ def predict(request: PredictionRequest):
 
 
 
-def predict_district(
-
-
-
-    district_name: str
-
-
-
-):
-
-
-
-
-
-
-
+def predict_district(district_name: str):
     try:
+        # Resolve aliases/old names using the existing working matcher.
+        district_df = find_district(district_name)
 
+        actual_district = str(
+            district_df.iloc[-1]["district"]
+        )
 
+        _, by_name = (
+            get_cached_latest_predictions()
+        )
 
+        prediction = by_name.get(
+            actual_district.strip().lower()
+        )
 
-
-
-
-        features, current = (
-
-
-
-            build_district_features(
-
-
-
-                district_name
-
-
-
+        if prediction is None:
+            # Very unlikely fallback; keeps endpoint behaviour safe.
+            features, current = (
+                build_district_features(
+                    actual_district
+                )
             )
 
+            prediction = run_prediction(
+                features
+            )
 
+            data_date = pd.Timestamp(
+                current["date"]
+            )
 
+            prediction_for_date = (
+                data_date
+                +
+                pd.offsets.MonthBegin(1)
+            )
+
+            spi_status = current.get(
+                "spi_status",
+                None
+            )
+
+            if pd.isna(spi_status):
+                spi_status = None
+            elif spi_status is not None:
+                spi_status = str(spi_status)
+
+            prediction.update({
+                "district":
+                    str(current["district"]),
+                "province":
+                    str(current["province"]),
+                "data_date":
+                    data_date.strftime("%Y-%m-%d"),
+                "prediction_for_date":
+                    prediction_for_date.strftime("%Y-%m-%d"),
+                "prediction_horizon":
+                    "next_month",
+                "environmental_data": {
+                    "rainfall_mm":
+                        round(
+                            float(current["rainfall_mm"]),
+                            3
+                        ),
+                    "rainfall_3month":
+                        round(
+                            float(current["rainfall_3month"]),
+                            3
+                        ),
+                    "spi3":
+                        round(
+                            float(current["spi3"]),
+                            4
+                        ),
+                    "spi_status":
+                        spi_status,
+                    "soil_moisture":
+                        round(
+                            float(current["soil_moisture"]),
+                            4
+                        ),
+                    "ndvi":
+                        round(
+                            float(current["ndvi"]),
+                            4
+                        ),
+                    "temperature_c":
+                        round(
+                            float(current["temperature_c"]),
+                            2
+                        ),
+                    "evaporation_mm":
+                        round(
+                            float(current["evaporation_mm"]),
+                            3
+                        ),
+                }
+            })
+
+            return prediction
+
+        return _copy_prediction(
+            prediction
         )
-
-
-
-
-
-
-
-        prediction = run_prediction(
-
-
-
-            features
-
-
-
-        )
-
-
-
-
-
-
-
-        prediction.update({
-
-
-
-
-
-
-
-            "district":
-
-
-
-                str(current["district"]),
-
-
-
-
-
-
-
-            "province":
-
-
-
-                str(current["province"]),
-
-
-
-
-
-
-
-            "data_date":
-
-
-
-                current["date"].strftime(
-
-
-
-                    "%Y-%m-%d"
-
-
-
-                ),
-
-
-
-
-
-
-
-            "environmental_data": {
-
-
-
-
-
-
-
-                "rainfall_mm":
-
-
-
-                    round(
-
-
-
-                        float(
-
-
-
-                            current[
-
-
-
-                                "rainfall_mm"
-
-
-
-                            ]
-
-
-
-                        ),
-
-
-
-                        3
-
-
-
-                    ),
-
-
-
-
-
-
-
-                "soil_moisture":
-
-
-
-                    round(
-
-
-
-                        float(
-
-
-
-                            current[
-
-
-
-                                "soil_moisture"
-
-
-
-                            ]
-
-
-
-                        ),
-
-
-
-                        4
-
-
-
-                    ),
-
-
-
-
-
-
-
-                "ndvi":
-
-
-
-                    round(
-
-
-
-                        float(
-
-
-
-                            current["ndvi"]
-
-
-
-                        ),
-
-
-
-                        4
-
-
-
-                    ),
-
-
-
-
-
-
-
-                "temperature_c":
-
-
-
-                    round(
-
-
-
-                        float(
-
-
-
-                            current[
-
-
-
-                                "temperature_c"
-
-
-
-                            ]
-
-
-
-                        ),
-
-
-
-                        2
-
-
-
-                    ),
-
-
-
-
-
-
-
-                "evaporation_mm":
-
-
-
-                    round(
-
-
-
-                        float(
-
-
-
-                            current[
-
-
-
-                                "evaporation_mm"
-
-
-
-                            ]
-
-
-
-                        ),
-
-
-
-                        3
-
-
-
-                    ),
-
-
-
-            }
-
-
-
-        })
-
-
-
-
-
-
-
-        return prediction
-
-
-
-
-
-
 
     except ValueError as error:
-
-
-
-
-
-
-
         raise HTTPException(
-
-
-
             status_code=404,
-
-
-
             detail=str(error)
-
-
-
         )
 
-
-
-
-
-
+    except HTTPException:
+        raise
 
     except Exception as error:
-
-
-
-
-
-
-
         print(
-
-
-
             "District prediction error:",
-
-
-
             error
-
-
-
         )
-
-
-
-
-
-
 
         raise HTTPException(
-
-
-
             status_code=500,
-
-
-
             detail=str(error)
-
-
-
         )
-
 
 
 # ============================================================
@@ -3092,21 +2402,9 @@ def predict_district(
 
 @app.get("/district-history/{district_name}")
 def district_history(district_name: str):
-
     try:
-        # --------------------------------------------------------
-        # GET ALL DATA FOR DISTRICT
-        # --------------------------------------------------------
-
-        district_df = find_district(district_name)
-
-        if district_df.empty:
-            raise ValueError(
-                f"District '{district_name}' was not found."
-            )
-
         district_df = (
-            district_df
+            find_district(district_name)
             .dropna(subset=["date"])
             .sort_values("date")
             .reset_index(drop=True)
@@ -3116,10 +2414,6 @@ def district_history(district_name: str):
             raise ValueError(
                 f"No historical data available for '{district_name}'."
             )
-
-        # --------------------------------------------------------
-        # MODEL NEEDS CURRENT MONTH + PREVIOUS 3 MONTHS
-        # --------------------------------------------------------
 
         if len(district_df) < 4:
             raise ValueError(
@@ -3134,335 +2428,268 @@ def district_history(district_name: str):
             district_df.iloc[-1]["province"]
         )
 
-        # --------------------------------------------------------
-        # SAFE FLOAT
-        # --------------------------------------------------------
-
         def safe_float(value, decimals=4):
-
             if pd.isna(value):
                 return None
 
             try:
-                return round(float(value), decimals)
+                number = float(value)
+
+                if not np.isfinite(number):
+                    return None
+
+                return round(
+                    number,
+                    decimals
+                )
 
             except (ValueError, TypeError):
                 return None
 
-        # --------------------------------------------------------
-        # BUILD HISTORICAL ML PREDICTIONS
-        #
-        # index 3 is the first month that has:
-        # current + lag1 + lag2 + lag3
-        # --------------------------------------------------------
+        # Build all historical feature columns vectorially.
+        work = district_df.copy()
 
-        full_history = []
+        lag_sources = [
+            "rainfall_mm",
+            "soil_moisture",
+            "ndvi",
+            "temperature_c",
+            "evaporation_mm",
+        ]
 
-        for i in range(3, len(district_df)):
+        for feature in lag_sources:
+            for lag in (1, 2, 3):
+                work[
+                    f"{feature}_lag{lag}"
+                ] = work[feature].shift(lag)
 
-            current = district_df.iloc[i]
-            lag1 = district_df.iloc[i - 1]
-            lag2 = district_df.iloc[i - 2]
-            lag3 = district_df.iloc[i - 3]
+        month_number = (
+            work["date"].dt.month
+        )
 
-            # ----------------------------------------------------
-            # SKIP MONTH IF REQUIRED ENVIRONMENTAL DATA IS MISSING
-            # ----------------------------------------------------
+        work["month_sin"] = np.sin(
+            2 * np.pi * month_number / 12
+        )
 
-            required_values = [
-                current["rainfall_mm"],
-                current["soil_moisture"],
-                current["ndvi"],
-                current["temperature_c"],
-                current["evaporation_mm"],
+        work["month_cos"] = np.cos(
+            2 * np.pi * month_number / 12
+        )
 
-                lag1["rainfall_mm"],
-                lag2["rainfall_mm"],
-                lag3["rainfall_mm"],
+        missing_columns = [
+            feature
+            for feature in MODEL_FEATURES
+            if feature not in work.columns
+        ]
 
-                lag1["soil_moisture"],
-                lag2["soil_moisture"],
-                lag3["soil_moisture"],
-
-                lag1["ndvi"],
-                lag2["ndvi"],
-                lag3["ndvi"],
-
-                lag1["temperature_c"],
-                lag2["temperature_c"],
-                lag3["temperature_c"],
-
-                lag1["evaporation_mm"],
-                lag2["evaporation_mm"],
-                lag3["evaporation_mm"],
-            ]
-
-            if any(pd.isna(value) for value in required_values):
-                continue
-
-            # ----------------------------------------------------
-            # SEASONAL FEATURES
-            # ----------------------------------------------------
-
-            month = int(current["date"].month)
-
-            month_sin = np.sin(
-                2 * np.pi * month / 12
+        if missing_columns:
+            raise ValueError(
+                "Unable to build historical model features: "
+                + ", ".join(missing_columns)
             )
 
-            month_cos = np.cos(
-                2 * np.pi * month / 12
-            )
+        X_all = work[
+            MODEL_FEATURES
+        ].apply(
+            pd.to_numeric,
+            errors="coerce"
+        )
 
-            # ----------------------------------------------------
-            # EXACT SAME 22 FEATURES USED BY CURRENT PREDICTION
-            # ----------------------------------------------------
+        valid_mask = (
+            X_all.notna().all(axis=1)
+            &
+            np.isfinite(
+                X_all.to_numpy(dtype=float)
+            ).all(axis=1)
+        )
 
-            features = {
+        valid_work = (
+            work.loc[valid_mask]
+            .copy()
+            .reset_index(drop=True)
+        )
 
-                # Current environmental conditions
-                "rainfall_mm":
-                    float(current["rainfall_mm"]),
+        X = (
+            X_all.loc[valid_mask]
+            .reset_index(drop=True)
+            .astype(float)
+        )
 
-                "soil_moisture":
-                    float(current["soil_moisture"]),
-
-                "ndvi":
-                    float(current["ndvi"]),
-
-                "temperature_c":
-                    float(current["temperature_c"]),
-
-                "evaporation_mm":
-                    float(current["evaporation_mm"]),
-
-                # Rainfall lags
-                "rainfall_mm_lag1":
-                    float(lag1["rainfall_mm"]),
-
-                "rainfall_mm_lag2":
-                    float(lag2["rainfall_mm"]),
-
-                "rainfall_mm_lag3":
-                    float(lag3["rainfall_mm"]),
-
-                # Soil moisture lags
-                "soil_moisture_lag1":
-                    float(lag1["soil_moisture"]),
-
-                "soil_moisture_lag2":
-                    float(lag2["soil_moisture"]),
-
-                "soil_moisture_lag3":
-                    float(lag3["soil_moisture"]),
-
-                # NDVI lags
-                "ndvi_lag1":
-                    float(lag1["ndvi"]),
-
-                "ndvi_lag2":
-                    float(lag2["ndvi"]),
-
-                "ndvi_lag3":
-                    float(lag3["ndvi"]),
-
-                # Temperature lags
-                "temperature_c_lag1":
-                    float(lag1["temperature_c"]),
-
-                "temperature_c_lag2":
-                    float(lag2["temperature_c"]),
-
-                "temperature_c_lag3":
-                    float(lag3["temperature_c"]),
-
-                # Evaporation lags
-                "evaporation_mm_lag1":
-                    float(lag1["evaporation_mm"]),
-
-                "evaporation_mm_lag2":
-                    float(lag2["evaporation_mm"]),
-
-                "evaporation_mm_lag3":
-                    float(lag3["evaporation_mm"]),
-
-                # Seasonal encoding
-                "month_sin":
-                    float(month_sin),
-
-                "month_cos":
-                    float(month_cos),
-            }
-
-            # ----------------------------------------------------
-            # RUN THE REAL RANDOM FOREST MODEL
-            # ----------------------------------------------------
-
-            prediction = run_prediction(features)
-
-            # ----------------------------------------------------
-            # CREATE HISTORY RECORD
-            # ----------------------------------------------------
-
-            full_history.append({
-
-                "date":
-                    current["date"].strftime("%Y-%m-%d"),
-
-                "year":
-                    int(current["date"].year),
-
-                "month":
-                    int(current["date"].month),
-
-                "month_label":
-                    current["date"].strftime("%b"),
-
-                "month_year":
-                    current["date"].strftime("%Y-%m"),
-
-                # Environmental values
-                "rainfall_mm":
-                    safe_float(
-                        current["rainfall_mm"],
-                        3
-                    ),
-
-                "soil_moisture":
-                    safe_float(
-                        current["soil_moisture"],
-                        4
-                    ),
-
-                "ndvi":
-                    safe_float(
-                        current["ndvi"],
-                        4
-                    ),
-
-                "temperature_c":
-                    safe_float(
-                        current["temperature_c"],
-                        2
-                    ),
-
-                "evaporation_mm":
-                    safe_float(
-                        current["evaporation_mm"],
-                        3
-                    ),
-
-                # REAL ML RESULTS
-                "drought_probability":
-                    prediction[
-                        "drought_probability"
-                    ],
-
-                "drought_probability_percent":
-                    prediction[
-                        "drought_probability_percent"
-                    ],
-
-                "predicted_drought":
-                    prediction[
-                        "predicted_drought"
-                    ],
-
-                "prediction_status":
-                    prediction[
-                        "prediction_status"
-                    ],
-
-                "risk_level":
-                    prediction[
-                        "risk_level"
-                    ],
-            })
-
-        # --------------------------------------------------------
-        # MAKE SURE MODEL PRODUCED HISTORY
-        # --------------------------------------------------------
-
-        if not full_history:
+        if X.empty:
             raise ValueError(
                 f"Unable to create historical ML predictions "
                 f"for '{district_name}'."
             )
 
-        # --------------------------------------------------------
-        # WEBSITE ONLY NEEDS MOST RECENT 24 MONTHS
-        # --------------------------------------------------------
+        # One model call for the complete district history.
+        probabilities = (
+            model.predict_proba(X)[:, 1]
+        )
+
+        full_history = []
+
+        for i, current in valid_work.iterrows():
+            probability = float(
+                probabilities[i]
+            )
+
+            predicted_drought = int(
+                probability >= WARNING_THRESHOLD
+            )
+
+            data_date = pd.Timestamp(
+                current["date"]
+            )
+
+            prediction_for_date = (
+                data_date
+                +
+                pd.offsets.MonthBegin(1)
+            )
+
+            spi_status = current.get(
+                "spi_status",
+                None
+            )
+
+            if pd.isna(spi_status):
+                spi_status = None
+            elif spi_status is not None:
+                spi_status = str(spi_status)
+
+            full_history.append({
+                "date":
+                    data_date.strftime("%Y-%m-%d"),
+                "data_date":
+                    data_date.strftime("%Y-%m-%d"),
+                "prediction_for_date":
+                    prediction_for_date.strftime("%Y-%m-%d"),
+                "prediction_horizon":
+                    "next_month",
+                "year":
+                    int(data_date.year),
+                "month":
+                    int(data_date.month),
+                "month_label":
+                    data_date.strftime("%b"),
+                "month_year":
+                    data_date.strftime("%Y-%m"),
+                "rainfall_mm":
+                    safe_float(
+                        current["rainfall_mm"],
+                        3
+                    ),
+                "rainfall_3month":
+                    safe_float(
+                        current["rainfall_3month"],
+                        3
+                    ),
+                "spi3":
+                    safe_float(
+                        current["spi3"],
+                        4
+                    ),
+                "spi_status":
+                    spi_status,
+                "soil_moisture":
+                    safe_float(
+                        current["soil_moisture"],
+                        4
+                    ),
+                "ndvi":
+                    safe_float(
+                        current["ndvi"],
+                        4
+                    ),
+                "temperature_c":
+                    safe_float(
+                        current["temperature_c"],
+                        2
+                    ),
+                "evaporation_mm":
+                    safe_float(
+                        current["evaporation_mm"],
+                        3
+                    ),
+                "drought_probability":
+                    round(probability, 4),
+                "drought_probability_percent":
+                    round(
+                        probability * 100,
+                        2
+                    ),
+                "predicted_drought":
+                    predicted_drought,
+                "prediction_status":
+                    (
+                        "Drought Warning"
+                        if predicted_drought == 1
+                        else "No Drought"
+                    ),
+                "risk_level":
+                    calculate_risk_level(
+                        probability
+                    ),
+            })
 
         history = full_history[-24:]
-
         latest = history[-1]
 
-        # --------------------------------------------------------
-        # RESPONSE
-        # --------------------------------------------------------
-
         return {
-
             "success": True,
-
-            "district":
-                actual_district,
-
-            "province":
-                province,
-
-            "records":
-                len(history),
-
-            "latest_date":
-                latest["date"],
-
+            "district": actual_district,
+            "province": province,
+            "records": len(history),
+            "latest_date": latest["date"],
+            "latest_data_date":
+                latest["data_date"],
+            "latest_prediction_for_date":
+                latest["prediction_for_date"],
+            "prediction_horizon":
+                "next_month",
+            "warning_threshold":
+                WARNING_THRESHOLD,
             "current": {
-
                 "rainfall_mm":
                     latest["rainfall_mm"],
-
+                "rainfall_3month":
+                    latest["rainfall_3month"],
+                "spi3":
+                    latest["spi3"],
+                "spi_status":
+                    latest["spi_status"],
                 "soil_moisture":
                     latest["soil_moisture"],
-
                 "ndvi":
                     latest["ndvi"],
-
                 "temperature_c":
                     latest["temperature_c"],
-
                 "evaporation_mm":
                     latest["evaporation_mm"],
-
                 "drought_probability":
                     latest["drought_probability"],
-
                 "drought_probability_percent":
                     latest["drought_probability_percent"],
-
                 "predicted_drought":
                     latest["predicted_drought"],
-
                 "prediction_status":
                     latest["prediction_status"],
-
                 "risk_level":
                     latest["risk_level"],
             },
-
             "history":
                 history,
         }
 
     except ValueError as error:
-
         raise HTTPException(
             status_code=404,
             detail=str(error)
         )
 
-    except Exception as error:
+    except HTTPException:
+        raise
 
+    except Exception as error:
         print(
             "DISTRICT HISTORY ML ERROR:",
             error
@@ -3497,340 +2724,76 @@ def district_history(district_name: str):
 
 
 def compare_districts():
-
-
-
-
-
-
-
     try:
-
-
-
-        # Get unique districts from the dataset
-
-
-
-        district_list = (
-
-
-
-            master_df[["province", "district"]]
-
-
-
-            .drop_duplicates()
-
-
-
-            .sort_values(["province", "district"])
-
-
-
+        predictions, _ = (
+            get_cached_latest_predictions()
         )
-
-
-
-
-
-
 
         comparison_results = []
 
-
-
-
-
-
-
-        for _, row in district_list.iterrows():
-
-
-
-
-
-
-
-            district_name = str(row["district"])
-
-
-
-            province = str(row["province"])
-
-
-
-
-
-
-
-            try:
-
-
-
-                # IMPORTANT:
-
-
-
-                # Reuse the already-working district prediction endpoint
-
-
-
-                prediction = predict_district(district_name)
-
-
-
-
-
-
-
-                comparison_results.append({
-
-
-
-                    "district": district_name,
-
-
-
-                    "province": province,
-
-
-
-
-
-
-
-                    "drought_probability":
-
-
-
-                        prediction["drought_probability"],
-
-
-
-
-
-
-
-                    "drought_probability_percent":
-
-
-
-                        prediction["drought_probability_percent"],
-
-
-
-
-
-
-
-                    "predicted_drought":
-
-
-
-                        prediction["predicted_drought"],
-
-
-
-
-
-
-
-                    "prediction_status":
-
-
-
-                        prediction["prediction_status"],
-
-
-
-
-
-
-
-                    "risk_level":
-
-
-
-                        prediction["risk_level"],
-
-
-
-
-
-
-
-                    "data_date":
-
-
-
-                        prediction.get("data_date"),
-
-
-
-
-
-
-
-                    "environmental_data":
-
-
-
+        for prediction in predictions:
+            comparison_results.append({
+                "district":
+                    prediction["district"],
+                "province":
+                    prediction["province"],
+                "drought_probability":
+                    prediction["drought_probability"],
+                "drought_probability_percent":
+                    prediction[
+                        "drought_probability_percent"
+                    ],
+                "predicted_drought":
+                    prediction["predicted_drought"],
+                "prediction_status":
+                    prediction["prediction_status"],
+                "risk_level":
+                    prediction["risk_level"],
+                "data_date":
+                    prediction.get("data_date"),
+                "prediction_for_date":
+                    prediction.get(
+                        "prediction_for_date"
+                    ),
+                "prediction_horizon":
+                    prediction.get(
+                        "prediction_horizon",
+                        "next_month"
+                    ),
+                "environmental_data":
+                    dict(
                         prediction.get(
-
-
-
                             "environmental_data",
-
-
-
                             {}
-
-
-
                         )
-
-
-
-                })
-
-
-
-
-
-
-
-            except Exception as district_error:
-
-
-
-
-
-
-
-                print(
-
-
-
-                    f"ERROR predicting {district_name}: "
-
-
-
-                    f"{district_error}"
-
-
-
-                )
-
-
-
-
-
-
-
-                continue
-
-
-
-
-
-
-
-        # Highest risk first
-
-
-
-        comparison_results.sort(
-
-
-
-            key=lambda x:
-
-
-
-                x["drought_probability"],
-
-
-
-            reverse=True
-
-
-
-        )
-
-
-
-
-
-
+                    ),
+            })
 
         return {
-
-
-
             "success": True,
-
-
-
-            "count": len(comparison_results),
-
-
-
-            "warning_threshold": WARNING_THRESHOLD,
-
-
-
-            "districts": comparison_results
-
-
-
+            "count":
+                len(comparison_results),
+            "warning_threshold":
+                WARNING_THRESHOLD,
+            "districts":
+                comparison_results,
         }
 
-
-
-
-
-
-
     except Exception as error:
-
-
-
-
-
-
-
-        print("COMPARE DISTRICTS ERROR:", error)
-
-
-
-
-
-
+        print(
+            "COMPARE DISTRICTS ERROR:",
+            error
+        )
 
         raise HTTPException(
-
-
-
             status_code=500,
-
-
-
             detail=str(error)
-
-
-
         )
 
 
 
 
-
-
-
-        # ============================================================
-
-
+# ============================================================
 
 # AGRIWATCH MAP DATA
 
@@ -3853,772 +2816,217 @@ def compare_districts():
 
 
 def get_map_data():
-
-
-
-
-
-
+    """Return cached live predictions + coordinates for all districts."""
 
     try:
-
-
-
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # FILE PATHS
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
-        risk_path = os.path.join(
-
-
-
-            base_dir,
-
-
-
-            "data",
-
-
-
-            "latest_district_risk.csv"
-
-
-
+        predictions, _ = (
+            get_cached_latest_predictions()
         )
-
-
-
-
-
-
 
         coordinates_path = os.path.join(
-
-
-
-            base_dir,
-
-
-
+            BASE_DIR,
             "data",
-
-
-
             "district_coordinates.csv"
-
-
-
         )
 
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # LOAD DATA
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
-        risk_df = pd.read_csv(risk_path)
-
-
-
-        coords_df = pd.read_csv(coordinates_path)
-
-
-
-
-
-
-
-        # Clean names before merging
-
-
-
-        risk_df["district"] = (
-
-
-
-            risk_df["district"]
-
-
-
-            .astype(str)
-
-
-
-            .str.strip()
-
-
-
-        )
-
-
-
-
-
-
-
-        risk_df["province"] = (
-
-
-
-            risk_df["province"]
-
-
-
-            .astype(str)
-
-
-
-            .str.strip()
-
-
-
-        )
-
-
-
-
-
-
-
-        coords_df["district"] = (
-
-
-
-            coords_df["district"]
-
-
-
-            .astype(str)
-
-
-
-            .str.strip()
-
-
-
-        )
-
-
-
-
-
-
-
-        coords_df["province"] = (
-
-
-
-            coords_df["province"]
-
-
-
-            .astype(str)
-
-
-
-            .str.strip()
-
-
-
-        )
-
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # MERGE ML RESULTS WITH COORDINATES
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
-        map_df = risk_df.merge(
-
-
-
-            coords_df[
-
-
-
-                [
-
-
-
-                    "province",
-
-
-
-                    "district",
-
-
-
-                    "latitude",
-
-
-
-                    "longitude"
-
-
-
-                ]
-
-
-
-            ],
-
-
-
-            on=["province", "district"],
-
-
-
-            how="left"
-
-
-
-        )
-
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # REMOVE RECORDS WITHOUT COORDINATES
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
-        map_df = map_df.dropna(
-
-
-
-            subset=["latitude", "longitude"]
-
-
-
-        )
-
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # CONVERT DATA FOR JSON
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
-        districts = []
-
-
-
-
-
-
-
-        for _, row in map_df.iterrows():
-
-
-
-
-
-
-
-            probability = float(row["drought_probability"])
-
-
-
-
-
-
-
-            # Use risk level already created by ML pipeline
-
-
-
-            risk_level = str(row["risk_level"])
-
-
-
-
-
-
-
-            district_data = {
-
-
-
-
-
-
-
-                "district": str(row["district"]),
-
-
-
-                "province": str(row["province"]),
-
-
-
-
-
-
-
-                "latitude": round(
-
-
-
-                    float(row["latitude"]),
-
-
-
-                    6
-
-
-
-                ),
-
-
-
-
-
-
-
-                "longitude": round(
-
-
-
-                    float(row["longitude"]),
-
-
-
-                    6
-
-
-
-                ),
-
-
-
-
-
-
-
-                "drought_probability": round(
-
-
-
-                    probability,
-
-
-
-                    4
-
-
-
-                ),
-
-
-
-
-
-
-
-                "drought_probability_percent": round(
-
-
-
-                    probability * 100,
-
-
-
-                    2
-
-
-
-                ),
-
-
-
-
-
-
-
-                "risk_level": risk_level,
-
-
-
-
-
-
-
-                "environmental_data": {
-
-
-
-
-
-
-
-                    "rainfall_mm": round(
-
-
-
-                        float(row["rainfall_mm"]),
-
-
-
-                        3
-
-
-
-                    ),
-
-
-
-
-
-
-
-                    "soil_moisture": round(
-
-
-
-                        float(row["soil_moisture"]),
-
-
-
-                        4
-
-
-
-                    ),
-
-
-
-
-
-
-
-                    "ndvi": round(
-
-
-
-                        float(row["ndvi"]),
-
-
-
-                        4
-
-
-
-                    ),
-
-
-
-
-
-
-
-                    "temperature_c": round(
-
-
-
-                        float(row["temperature_c"]),
-
-
-
-                        2
-
-
-
-                    ),
-
-
-
-
-
-
-
-                    "evaporation_mm": round(
-
-
-
-                        float(row["evaporation_mm"]),
-
-
-
-                        3
-
-
-
-                    )
-
-
-
-                }
-
-
-
+        coords_lookup = {}
+
+        def normalize_coord_name(value):
+            value = str(
+                value or ""
+            ).strip().lower()
+
+            value = re.sub(
+                r"\b(district|agency)\b",
+                "",
+                value
+            )
+
+            value = re.sub(
+                r"[^a-z0-9]+",
+                "",
+                value
+            )
+
+            return value
+
+        if os.path.exists(
+            coordinates_path
+        ):
+            coords_df = pd.read_csv(
+                coordinates_path
+            )
+
+            required_coord_columns = {
+                "district",
+                "latitude",
+                "longitude"
             }
 
+            if required_coord_columns.issubset(
+                coords_df.columns
+            ):
+                for _, coord_row in (
+                    coords_df.iterrows()
+                ):
+                    district_key = (
+                        normalize_coord_name(
+                            coord_row.get(
+                                "district"
+                            )
+                        )
+                    )
 
+                    province_key = str(
+                        coord_row.get(
+                            "province",
+                            ""
+                        )
+                    ).strip().lower()
 
+                    latitude = pd.to_numeric(
+                        coord_row.get(
+                            "latitude"
+                        ),
+                        errors="coerce"
+                    )
 
+                    longitude = pd.to_numeric(
+                        coord_row.get(
+                            "longitude"
+                        ),
+                        errors="coerce"
+                    )
 
+                    if (
+                        district_key
+                        and
+                        pd.notna(latitude)
+                        and
+                        pd.notna(longitude)
+                    ):
+                        coord = (
+                            float(latitude),
+                            float(longitude)
+                        )
 
+                        coords_lookup[
+                            (
+                                province_key,
+                                district_key
+                            )
+                        ] = coord
 
-            districts.append(district_data)
+                        coords_lookup[
+                            (
+                                "",
+                                district_key
+                            )
+                        ] = coord
 
+        districts = []
+        coordinates_found = 0
 
+        for prediction in predictions:
+            actual_district = (
+                prediction["district"]
+            )
 
+            province = (
+                prediction["province"]
+            )
 
+            key = normalize_coord_name(
+                actual_district
+            )
 
+            coord = coords_lookup.get(
+                (
+                    province.strip().lower(),
+                    key
+                )
+            )
 
+            if coord is None:
+                coord = coords_lookup.get(
+                    ("", key)
+                )
 
-        # Highest risk first
+            latitude = None
+            longitude = None
 
+            if coord is not None:
+                latitude = round(
+                    float(coord[0]),
+                    6
+                )
 
+                longitude = round(
+                    float(coord[1]),
+                    6
+                )
 
-        districts = sorted(
+                coordinates_found += 1
 
+            item = _copy_prediction(
+                prediction
+            )
 
+            item["latitude"] = latitude
+            item["longitude"] = longitude
 
-            districts,
+            districts.append(
+                item
+            )
 
+        return {
+            "success": True,
+            "count":
+                len(districts),
+            "total_risk_records":
+                len(districts),
+            "available_districts":
+                int(
+                    master_df[
+                        "district"
+                    ].nunique()
+                ),
+            "warning_threshold":
+                WARNING_THRESHOLD,
+            "coordinates_found":
+                coordinates_found,
+            "coordinates_missing":
+                len(districts)
+                -
+                coordinates_found,
+            "prediction_errors":
+                [],
+            "cache_seconds":
+                LATEST_PREDICTION_CACHE_SECONDS,
+            "districts":
+                districts,
+        }
 
-
-            key=lambda x: x["drought_probability"],
-
-
-
-            reverse=True
-
-
-
+    except Exception as error:
+        print(
+            "MAP DATA ERROR:",
+            error
         )
 
-
-
-
-
-
-
-        # ----------------------------------------------------
-
-
-
-        # RETURN RESPONSE
-
-
-
-        # ----------------------------------------------------
-
-
-
-
-
-
-
         return {
-
-
-
-
-
-
-
-            "success": True,
-
-
-
-
-
-
-
-            "count": len(districts),
-
-
-
-
-
-
-
-            "total_risk_records": len(risk_df),
-
-
-
-
-
-
-
-            "coordinates_found": len(districts),
-
-
-
-
-
-
-
-            "districts": districts
-
-
-
-        }
-
-
-
-
-
-
-
-    except Exception as e:
-
-
-
-
-
-
-
-        return {
-
-
-
             "success": False,
-
-
-
-            "error": str(e)
-
-
-
+            "error":
+                str(error),
+            "count":
+                0,
+            "districts":
+                []
         }
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ============================================================
-
-
+# ============================================================
 
 # 23. NATIONAL HISTORICAL ENVIRONMENTAL TREND
 
@@ -7034,25 +5442,45 @@ def irrigation_context(district_name: str):
             )
 
         coords_df = pd.read_csv(coordinates_path)
-        coords_df["district"] = coords_df["district"].astype(str).str.strip()
-        coords_df["province"] = coords_df["province"].astype(str).str.strip()
 
-        match = coords_df[
-            (coords_df["district"].str.lower() == actual_district.lower()) &
-            (coords_df["province"].str.lower() == province.lower())
-        ]
+        def normalize_coord_name(value):
+            value = str(value or "").strip().lower()
+            value = re.sub(r"\b(district|agency)\b", "", value)
+            value = re.sub(r"[^a-z0-9]+", "", value)
+            return value
 
-        # Province labels can differ slightly between datasets, so fall back
-        # to a unique district-name match before failing.
+        coords_df["_district_key"] = coords_df["district"].map(
+            normalize_coord_name
+        )
+
+        district_key = normalize_coord_name(actual_district)
+
+        # Prefer same-province match when province exists, then fall back to
+        # district name only so old province labels do not break the endpoint.
+        if "province" in coords_df.columns:
+            coords_df["_province_key"] = (
+                coords_df["province"].astype(str).str.strip().str.lower()
+            )
+            match = coords_df[
+                (coords_df["_district_key"] == district_key)
+                & (coords_df["_province_key"] == province.strip().lower())
+            ]
+        else:
+            match = coords_df.iloc[0:0]
+
         if match.empty:
             match = coords_df[
-                coords_df["district"].str.lower() == actual_district.lower()
+                coords_df["_district_key"] == district_key
             ]
 
         if match.empty:
             raise HTTPException(
                 status_code=404,
-                detail=f"Coordinates not found for '{actual_district}'."
+                detail=(
+                    f"Coordinates not found for '{actual_district}'. "
+                    "The ML prediction is available, but this new district "
+                    "still needs a row in district_coordinates.csv for live weather."
+                )
             )
 
         row = match.iloc[0]
@@ -7065,6 +5493,8 @@ def irrigation_context(district_name: str):
             "latitude": round(float(row["latitude"]), 6),
             "longitude": round(float(row["longitude"]), 6),
             "data_date": prediction.get("data_date"),
+            "prediction_for_date": prediction.get("prediction_for_date"),
+            "prediction_horizon": prediction.get("prediction_horizon", "next_month"),
             "drought_probability": prediction.get("drought_probability"),
             "drought_probability_percent": prediction.get("drought_probability_percent"),
             "predicted_drought": prediction.get("predicted_drought"),
@@ -7073,6 +5503,9 @@ def irrigation_context(district_name: str):
             "warning_threshold": prediction.get("warning_threshold"),
             "environmental_data": {
                 "rainfall_mm": env.get("rainfall_mm"),
+                "rainfall_3month": env.get("rainfall_3month"),
+                "spi3": env.get("spi3"),
+                "spi_status": env.get("spi_status"),
                 "soil_moisture": env.get("soil_moisture"),
                 "ndvi": env.get("ndvi"),
                 "temperature_c": env.get("temperature_c"),
